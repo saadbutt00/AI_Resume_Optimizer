@@ -3,7 +3,6 @@
 # Uses: pdfplumber, spaCy, python-docx, openai
 
 import streamlit as st
-import pdfplumber
 import spacy
 import re
 import os
@@ -11,6 +10,13 @@ import io
 import difflib
 from docx import Document
 import openai
+
+# Try importing pdfplumber with graceful fallback
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
 
 # -------------------- CONFIG --------------------
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -28,6 +34,11 @@ except OSError:
 # -------------------- UTILITIES --------------------
 def extract_text_from_pdf(file_bytes):
     """Extract text from uploaded PDF file bytes using pdfplumber."""
+    if not PDFPLUMBER_AVAILABLE:
+        raise RuntimeError(
+            "pdfplumber is not installed. Please install it with `pip install pdfplumber` "
+            "or upload a DOCX file instead."
+        )
     text_chunks = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
@@ -48,7 +59,6 @@ def extract_keywords_spacy(text, top_k=30):
     for ent in doc.ents:
         if len(ent.text) > 2:
             candidates.append(ent.text.lower())
-    # frequency score
     freq = {}
     for c in candidates:
         freq[c] = freq.get(c, 0) + 1
@@ -125,7 +135,10 @@ def generate_change_summary(old_text, new_text):
 # -------------------- STREAMLIT UI --------------------
 st.set_page_config(page_title="AI Resume Optimiser", layout="wide")
 st.title("AI Resume Optimiser and Generator")
-st.write("Upload a candidate resume (PDF) and paste a job description. The app will analyse keywords, call an LLM to produce an optimised resume, and show a change log.")
+st.write(
+    "Upload a candidate resume (PDF) and paste a job description. "
+    "The app will analyse keywords, call an LLM to produce an optimised resume, and show a change log."
+)
 
 with st.sidebar:
     st.header("Settings")
@@ -138,6 +151,8 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     uploaded_file = st.file_uploader("Upload resume (PDF)", type=["pdf"])
+    if not PDFPLUMBER_AVAILABLE:
+        st.warning("⚠ pdfplumber is not installed. PDF uploads will not work until it's installed.")
     jd_text = st.text_area("Paste job description here", height=300)
     instructions = st.text_area("Optional: Extra optimisation instructions", height=120)
     optimize_btn = st.button("Optimise Resume")
@@ -181,7 +196,11 @@ if optimize_btn:
                 st.code(llm_out[:10000] + ("..." if len(llm_out) > 10000 else ""))
 
                 docx_bytes = generate_docx_from_text(llm_out)
-                st.download_button("Download Optimised Resume (DOCX)", data=docx_bytes.getvalue(), file_name="optimised_resume.docx")
+                st.download_button(
+                    "Download Optimised Resume (DOCX)",
+                    data=docx_bytes.getvalue(),
+                    file_name="optimised_resume.docx"
+                )
 
                 st.subheader("Change Summary (diff)")
                 change_summary = generate_change_summary(resume_text, llm_out)
@@ -191,4 +210,9 @@ if optimize_btn:
                 st.error(f"Error during optimisation: {e}")
 
 st.markdown("---")
-st.write("Notes:\n- Install dependencies: `pip install -r requirements.txt`\n- Download spaCy model: `python -m spacy download en_core_web_md`\n- Default model is `gpt-4o-mini` for wide availability.\n")
+st.write(
+    "Notes:\n"
+    "- Install dependencies: `pip install -r requirements.txt`\n"
+    "- Download spaCy model: `python -m spacy download en_core_web_md`\n"
+    "- Default model is `gpt-4o-mini` for wide availability.\n"
+)
