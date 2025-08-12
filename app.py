@@ -13,20 +13,19 @@ from docx import Document
 import openai
 
 # -------------------- CONFIG --------------------
-# Make sure to set OPENAI_API_KEY environment variable or enter below
-OPENAI_API_KEY = os.environ.get("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", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 
-# spaCy model - recommended: en_core_web_md (has vectors)
+# Load spaCy model with auto-download if missing
 try:
     nlp = spacy.load("en_core_web_md")
-except Exception:
-    # fallback to small model; quality for semantic similarity will be lower
-    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    from spacy.cli import download
+    download("en_core_web_md")
+    nlp = spacy.load("en_core_web_md")
 
 # -------------------- UTILITIES --------------------
-
 def extract_text_from_pdf(file_bytes):
     """Extract text from uploaded PDF file bytes using pdfplumber."""
     text_chunks = []
@@ -36,21 +35,6 @@ def extract_text_from_pdf(file_bytes):
             if page_text:
                 text_chunks.append(page_text)
     return "\n\n".join(text_chunks)
-
-
-def simple_section_split(text):
-    """Try to split a resume into common sections using headings heuristics."""
-    headings = [r"experience", r"work experience", r"professional experience", r"education",
-                r"skills", r"projects", r"certifications", r"summary", r"achievements", r"contact"]
-    # Build regex to find headings
-    pattern = r"(^|\n)\s*(?:" + "|".join(headings) + r")[:\n].*"
-    parts = re.split(pattern, text, flags=re.IGNORECASE)
-    # If split didn't work, fallback to whole text
-    if len(parts) <= 1:
-        return {"full_text": text}
-    # Build a rough map: this is intentionally simple and may be improved
-    sections = {"full_text": text}
-    return sections
 
 
 def extract_keywords_spacy(text, top_k=30):
@@ -68,7 +52,6 @@ def extract_keywords_spacy(text, top_k=30):
     freq = {}
     for c in candidates:
         freq[c] = freq.get(c, 0) + 1
-    # sort and return top_k
     items = sorted(freq.items(), key=lambda x: x[1], reverse=True)
     return [k for k, v in items[:top_k]]
 
@@ -91,11 +74,10 @@ def build_prompt_for_optimization(resume_text, jd_text, instructions=None):
     base = (
         "You are an expert resume writer and ATS optimisation assistant.\n"
         "Given the candidate resume and the target job description below, produce an optimised, ATS-friendly resume.\n"
-        "Requirements:\n"
         "- Keep content truthful; do not invent qualifications.\n"
         "- Emphasise, rephrase, and reorder existing experiences to match the job description keywords.\n"
-        "- Insert missing keywords only if they can be naturally applied (do not invent new roles).\n"
-        "- Output the resume in plain text using clear headings: Contact, Summary, Skills, Experience, Education, Projects (if any).\n"
+        "- Insert missing keywords only if they can be naturally applied.\n"
+        "- Output the resume in plain text with headings: Contact, Summary, Skills, Experience, Education, Projects.\n"
         "- Provide a brief change log after the resume: list added keywords and reworded sections.\n\n"
     )
     if instructions:
@@ -106,11 +88,10 @@ def build_prompt_for_optimization(resume_text, jd_text, instructions=None):
     return base
 
 
-def call_openai_chat(prompt, model="gpt-4", max_tokens=1200, temperature=0.2):
+def call_openai_chat(prompt, model="gpt-4o-mini", max_tokens=1200, temperature=0.2):
     if not openai.api_key:
-        raise RuntimeError("OpenAI API key not set. Set OPENAI_API_KEY environment variable or supply a key.")
+        raise RuntimeError("OpenAI API key not set.")
     client = openai.OpenAI(api_key=openai.api_key)
-
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
@@ -126,7 +107,6 @@ def generate_docx_from_text(text):
         if line.strip() == "":
             doc.add_paragraph("")
         elif re.match(r"^(Contact|Summary|Skills|Experience|Education|Projects|Certifications):", line):
-            # heading
             doc.add_heading(line.strip(), level=2)
         else:
             doc.add_paragraph(line)
@@ -143,24 +123,23 @@ def generate_change_summary(old_text, new_text):
     return "\n".join(diff)
 
 # -------------------- STREAMLIT UI --------------------
-
 st.set_page_config(page_title="AI Resume Optimiser", layout="wide")
 st.title("AI Resume Optimiser and Generator")
-st.write("Upload a candidate resume (PDF) and paste a job description. The app will parse, analyse keywords, and call an LLM to produce an optimised resume and a change log.")
+st.write("Upload a candidate resume (PDF) and paste a job description. The app will analyse keywords, call an LLM to produce an optimised resume, and show a change log.")
 
 with st.sidebar:
     st.header("Settings")
-    model_choice = st.selectbox("LLM model (requires API key)", ["gpt-4", "gpt-4o", "gpt-3.5-turbo"], index=0)
-    openai_key_input = st.text_input("OpenAI API Key (or set env var OPENAI_API_KEY)", type="password")
+    model_choice = st.selectbox("LLM model", ["gpt-4o-mini", "gpt-3.5-turbo"], index=0)
+    openai_key_input = st.text_input("OpenAI API Key", type="password")
     if openai_key_input:
         openai.api_key = openai_key_input
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    uploaded_file = st.file_uploader("Upload resume (PDF)", type=["pdf"], accept_multiple_files=False)
+    uploaded_file = st.file_uploader("Upload resume (PDF)", type=["pdf"])
     jd_text = st.text_area("Paste job description here", height=300)
-    instructions = st.text_area("Optional: Extra instructions for optimisation (tone, seniority etc)", height=120)
+    instructions = st.text_area("Optional: Extra optimisation instructions", height=120)
     optimize_btn = st.button("Optimise Resume")
 
 with col2:
@@ -179,45 +158,37 @@ if uploaded_file is not None:
 if optimize_btn:
     if not resume_text:
         st.error("Please upload a resume PDF first.")
-    elif not jd_text or jd_text.strip() == "":
+    elif not jd_text.strip():
         st.error("Please paste the target job description.")
     else:
         with st.spinner("Analysing and optimising..."):
             try:
-                # Keyword overlap
                 overlap = compute_keyword_overlap(resume_text, jd_text)
 
                 st.subheader("Keyword Analysis")
-                st.write(f"Resume keywords found: {overlap['resume_keywords_count']}")
-                st.write(f"Job description keywords found: {overlap['jd_keywords_count']}")
+                st.write(f"Resume keywords: {overlap['resume_keywords_count']}")
+                st.write(f"Job description keywords: {overlap['jd_keywords_count']}")
                 st.write(f"Matched keywords: {overlap['matched_count']}")
                 st.write("Top matched keywords:")
                 st.write(overlap['matched'])
                 st.write("Top missing keywords from JD:")
                 st.write(overlap['missing'])
 
-                # Build prompt and call LLM
                 prompt = build_prompt_for_optimization(resume_text, jd_text, instructions=instructions)
                 llm_out = call_openai_chat(prompt, model=model_choice)
 
-                # Split returned content: assume optimised resume then change log
                 st.subheader("Optimised Resume (LLM Output)")
                 st.code(llm_out[:10000] + ("..." if len(llm_out) > 10000 else ""))
 
-                # Create downloadable DOCX
                 docx_bytes = generate_docx_from_text(llm_out)
                 st.download_button("Download Optimised Resume (DOCX)", data=docx_bytes.getvalue(), file_name="optimised_resume.docx")
 
-                # Change summary using difflib (compare plain texts)
                 st.subheader("Change Summary (diff)")
                 change_summary = generate_change_summary(resume_text, llm_out)
-                st.text_area("Diff (unified) between original resume text and optimised resume", value=change_summary, height=300)
+                st.text_area("Diff between original and optimised resume", value=change_summary, height=300)
 
             except Exception as e:
                 st.error(f"Error during optimisation: {e}")
 
-# Footer notes
 st.markdown("---")
-st.write("Notes: \n- This is a starter implementation. Improve parsing heuristics, add DOC/DOCX support, and tune the LLM prompt for best results.\n- Install spaCy model: `python -m spacy download en_core_web_md`.\n- Dependencies: pdfplumber, spacy, python-docx, openai, streamlit.")
-
-# streamlit run "f:/app/app.py"
+st.write("Notes:\n- Install dependencies: `pip install -r requirements.txt`\n- Download spaCy model: `python -m spacy download en_core_web_md`\n- Default model is `gpt-4o-mini` for wide availability.\n")
